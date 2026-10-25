@@ -4,7 +4,7 @@
   "description": "",
   "main": "oauth2.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test/sanity.js"
   },
   "repository": {
     "type": "git",
@@ -18,8 +18,12 @@
   },
   "homepage": "https://github.com/e1ton1au/get-refresh-token#readme",
   "dependencies": {
-    "googleapis": "100.0.0",
+    "googleapis": "188.0.0",
     "open": "8.4.0",
     "server-destroy": "1.0.1"
+  },
+  "overrides": {
+    "jws": "4.0.1",
+    "qs": "6.16.1"
   }
 }
