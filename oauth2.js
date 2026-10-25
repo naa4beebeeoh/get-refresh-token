@@ -13,22 +13,38 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const url = require('url');
+const {URL} = require('url');
 const opn = require('open');
 const destroyer = require('server-destroy');
 
 const {google} = require('googleapis');
 
+const PORT = 3000;
+const HOST = '127.0.0.1';
+const CALLBACK_PATH = '/oauth2callback';
+
 /**
- * To use OAuth2 authentication, we need access to a a CLIENT_ID, CLIENT_SECRET, AND REDIRECT_URI.  To get these credentials for your application, visit https://console.cloud.google.com/apis/credentials.
+ * To use OAuth2 authentication, we need access to a CLIENT_ID, CLIENT_SECRET, AND REDIRECT_URI.
+ * To get these credentials for your application, visit https://console.cloud.google.com/apis/credentials.
  */
 const keyPath = path.join(__dirname, 'oauth2.keys.json');
-let keys = {redirect_uris: ['']};
-if (fs.existsSync(keyPath)) {
-  keys = require(keyPath).web;
+if (!fs.existsSync(keyPath)) {
+  console.error(
+    `Missing ${keyPath}. Download OAuth client credentials from Google Cloud Console and save them as oauth2.keys.json (this file is gitignored).`
+  );
+  process.exit(1);
+}
+
+const keys = require(keyPath).web;
+if (!keys || !keys.client_id || !keys.client_secret || !keys.redirect_uris?.[0]) {
+  console.error(
+    'oauth2.keys.json must contain a web client with client_id, client_secret, and redirect_uris[0].'
+  );
+  process.exit(1);
 }
 
 /**
@@ -41,44 +57,102 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 /**
- * This is one of the many ways you can configure googleapis to use authentication credentials.  In this method, we're setting a global reference for all APIs.  Any other API you use here, like google.drive('v3'), will now use this auth client. You can also override the auth client at the service and method call levels.
+ * This is one of the many ways you can configure googleapis to use authentication credentials.
+ * In this method, we're setting a global reference for all APIs.
  */
 google.options({auth: oauth2Client});
 
 /**
- * Open an http server to accept the oauth callback. In this simple example, the only request to our webserver is to /callback?code=<code>
+ * Open an http server to accept the oauth callback. Bound to loopback only.
  */
 async function authenticate(scopes) {
   return new Promise((resolve, reject) => {
-    // grab the url that will be used for authorization
+    const state = crypto.randomBytes(32).toString('hex');
     const authorizeUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes.join(' '),
+      state,
+      prompt: 'consent',
     });
+
     const server = http
       .createServer(async (req, res) => {
         try {
-          if (req.url.indexOf('/oauth2callback') > -1) {
-            const qs = new url.URL(req.url, 'http://localhost:3000')
-              .searchParams;
-            const {tokens} = await oauth2Client.getToken(qs.get('code'));
-            oauth2Client.credentials = tokens; // eslint-disable-line require-atomic-updates
-            resolve(oauth2Client);
-            res.end(JSON.stringify(tokens, null, 2));
-            server.destroy();
+          const requestUrl = new URL(req.url, `http://${HOST}:${PORT}`);
+          if (requestUrl.pathname !== CALLBACK_PATH) {
+            res.writeHead(404);
+            res.end('Not found');
+            return;
           }
+
+          const returnedState = requestUrl.searchParams.get('state');
+          if (!returnedState || returnedState !== state) {
+            res.writeHead(400);
+            res.end('Invalid OAuth state');
+            reject(new Error('Invalid OAuth state'));
+            server.destroy();
+            return;
+          }
+
+          const code = requestUrl.searchParams.get('code');
+          if (!code) {
+            const error = requestUrl.searchParams.get('error') || 'missing code';
+            res.writeHead(400);
+            res.end(`Authorization failed: ${error}`);
+            reject(new Error(`Authorization failed: ${error}`));
+            server.destroy();
+            return;
+          }
+
+          const {tokens} = await oauth2Client.getToken(code);
+          oauth2Client.credentials = tokens; // eslint-disable-line require-atomic-updates
+
+          // Never send tokens in the HTTP response (browser history / shoulder-surfing).
+          console.log(JSON.stringify(tokens, null, 2));
+          res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
+          res.end('Authentication successful. You can close this window. Tokens were printed to the terminal.');
+
+          resolve(oauth2Client);
+          server.destroy();
         } catch (e) {
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end('Authentication error');
+          }
           reject(e);
+          try {
+            server.destroy();
+          } catch (_) {
+            /* ignore */
+          }
         }
       })
-      .listen(3000, () => {
-        // open the browser to the authorize url to start the workflow
+      .listen(PORT, HOST, () => {
         opn(authorizeUrl, {wait: false}).then(cp => cp.unref());
       });
     destroyer(server);
   });
 }
 
-const scopes = process.argv[2].split(',').map(scope => `https://www.googleapis.com/auth/${scope}`)
-authenticate(scopes)
-  .catch(console.error);
+const scopeArg = process.argv[2];
+if (!scopeArg) {
+  console.error(
+    'Usage: node oauth2.js <scope>[,scope...]\n' +
+      'Example: node oauth2.js drive.readonly,gmail.readonly'
+  );
+  process.exit(1);
+}
+
+const scopes = scopeArg.split(',').map(scope => {
+  const trimmed = scope.trim();
+  if (!trimmed || !/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
+    console.error(`Invalid scope segment: ${JSON.stringify(scope)}`);
+    process.exit(1);
+  }
+  return `https://www.googleapis.com/auth/${trimmed}`;
+});
+
+authenticate(scopes).catch(err => {
+  console.error(err);
+  process.exit(1);
+});

@@ -72,6 +72,12 @@ typings/
 .env
 .env.test
 
+# OAuth client secrets and any locally saved tokens
+oauth2.keys.json
+*.keys.json
+tokens.json
+credentials.json
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 
