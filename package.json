@@ -22,7 +22,7 @@
     "open": "8.4.0",
     "server-destroy": "1.0.1"
   },
-  "resolutions": {
+  "overrides": {
     "jws": "4.0.1",
     "qs": "6.16.1"
   }
